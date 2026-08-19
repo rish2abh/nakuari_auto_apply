@@ -5,9 +5,11 @@
   "main": "naukri-profile-refresh.js",
   "scripts": {
     "refresh": "node naukri-profile-refresh.js",
-    "login": "node naukri-profile-refresh.js login"
+    "login": "node naukri-profile-refresh.js login",
+    "auto-apply": "node naukri-auto-apply.js",
+    "run-all": "node naukri-full-run.js"
   },
-  "author": "Ankit Baghel",
+  "author": "Rishabh Shrivastava",
   "license": "ISC",
   "dependencies": {
     "playwright-core": "^1.61.1"

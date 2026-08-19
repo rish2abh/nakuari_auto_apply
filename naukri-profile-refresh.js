@@ -50,6 +50,51 @@ const log = (msg) => {
 
 const onProfile = (url) => url.pathname.startsWith('/mnjuser');
 
+async function launchBrowser(profileDir, loginMode) {
+  const baseArgs = [
+    '--disable-blink-features=AutomationControlled',
+    ...(loginMode ? [] : ['--window-position=-32000,-32000']),
+  ];
+
+  const attempts = [
+    {
+      label: 'chrome-channel',
+      options: {
+        channel: 'chrome',
+        headless: false,
+        viewport: { width: 1280, height: 850 },
+        args: baseArgs,
+      },
+    },
+    {
+      label: 'playwright-chromium',
+      options: {
+        headless: false,
+        viewport: { width: 1280, height: 850 },
+        args: baseArgs,
+      },
+    },
+  ];
+
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      return await Promise.race([
+        chromium.launchPersistentContext(profileDir, attempt.options),
+        new Promise((_, reject) => setTimeout(() => reject(new AutomationError('BROWSER_ERROR', `launch timed out after 60s (${attempt.label})`)), 60000)),
+      ]);
+    } catch (err) {
+      lastError = err;
+      const msg = String(err && err.message ? err.message : err);
+      if (attempt.label === 'chrome-channel') {
+        log(`[BROWSER_ERROR] Chrome channel unavailable (${msg}); retrying with Playwright Chromium`);
+      }
+    }
+  }
+
+  throw lastError || new AutomationError('BROWSER_ERROR', 'browser launch failed');
+}
+
 async function safeGoto(page, url, options = {}, retry = false) {
   try {
     return await page.goto(url, options);
@@ -65,7 +110,16 @@ async function safeGoto(page, url, options = {}, retry = false) {
 
 async function googleLogin(ctx, page) {
   log('Session gone — signing in with Google...');
-  await safeGoto(page, LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+  // FIX (item 5 follow-up): don't silently swallow a NETWORK_ERROR here — log it so
+  // a failed LOGIN_URL nav shows up as NETWORK_ERROR instead of a confusing later
+  // "googleBtn never appeared" timeout with no root cause.
+  try {
+    await safeGoto(page, LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  } catch (e) {
+    if (e && e.category === 'NETWORK_ERROR') log(`[NETWORK_ERROR] ${e.message}`);
+    // still non-fatal here — fall through and let the googleBtn waitFor below
+    // surface its own timeout if the page truly never loaded.
+  }
 
   // Naukri's "Sign in with Google" is a plain div.socialbtn.google
   const googleBtn = page.locator('.socialbtn.google, [class*="socialbtn"][class*="google"]').first();
@@ -132,38 +186,99 @@ async function googleLogin(ctx, page) {
 // Main run — with concurrency lock, timeout guard, and safer launch
 (async () => {
   const LOCK_FILE = path.join(__dirname, '.run.lock');
-  if (fs.existsSync(LOCK_FILE)) {
-    try {
-      const pid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8'), 10);
-      if (!Number.isNaN(pid)) {
-        try { process.kill(pid, 0); log('SKIP: previous run still active'); return; } catch (e) {}
+  const now = Date.now();
+  const myEntry = `${process.pid}:${now}`;
+  const parseLock = (txt) => {
+    if (!txt) return null;
+    const parts = txt.split(':');
+    const pid = parseInt(parts[0], 10);
+    const ts = parseInt(parts[1], 10) || 0;
+    return { pid, ts };
+  };
+
+  // Try to acquire lock atomically. If it already exists, inspect it.
+  try {
+    fs.writeFileSync(LOCK_FILE, myEntry, { flag: 'wx' });
+  } catch (e) {
+    if (e && e.code === 'EEXIST') {
+      // Someone created it concurrently — inspect current contents
+      try {
+        const txt = fs.readFileSync(LOCK_FILE, 'utf8');
+        const lock = parseLock(txt);
+        if (lock) {
+          const age = now - lock.ts;
+          // reclaim stale locks older than 15 minutes
+          if (age > 15 * 60 * 1000) {
+            try {
+              fs.writeFileSync(LOCK_FILE, myEntry, { flag: 'w' });
+            } catch (e2) {
+              // if we still can't claim it, treat as held
+              log('SKIP: previous run lock present (could not reclaim)');
+              return;
+            }
+          } else {
+            // recent lock — check liveness
+            if (!Number.isNaN(lock.pid)) {
+              try { process.kill(lock.pid, 0); log('SKIP: previous run still active'); return; } catch (killErr) {
+                // process not alive, attempt to claim atomically again
+                try { fs.writeFileSync(LOCK_FILE, myEntry, { flag: 'wx' }); } catch (e3) { log('SKIP: previous run still active'); return; }
+              }
+            } else {
+              log('SKIP: previous run lock present (invalid pid)');
+              return;
+            }
+          }
+        } else {
+          log('SKIP: previous run lock present (unreadable)');
+          return;
+        }
+      } catch (e2) {
+        log('SKIP: previous run lock present (read error)');
+        return;
       }
-    } catch (e) {}
+    } else {
+      // other write error — rethrow
+      throw e;
+    }
   }
-  try { fs.writeFileSync(LOCK_FILE, String(process.pid)); } catch (e) {}
 
   let ctx = null;
   let page = null;
-  const killer = setTimeout(() => {
+
+  // FIX (item 2 follow-up): the timeout guard now attempts a clean ctx.close()
+  // before force-exiting, instead of just killing the script and orphaning
+  // chrome.exe. close() is itself timeboxed so a hung close() can't defeat
+  // the whole point of this guard.
+  const killer = setTimeout(async () => {
     log('ERROR: run exceeded max duration');
-    process.exit(1);
+    try {
+      if (ctx && ctx.close) {
+        await Promise.race([
+          ctx.close(),
+          new Promise((resolve) => setTimeout(resolve, 10000)), // don't let close() hang forever
+        ]);
+      }
+    } catch (e) {
+      log(`[BROWSER_ERROR] cleanup on timeout failed: ${e && e.message}`);
+    } finally {
+      try { fs.unlinkSync(LOCK_FILE); } catch (e) {}
+      process.exit(1);
+    }
   }, 8 * 60 * 1000);
 
   try {
     try {
-      ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-        channel: 'chrome',
-        headless: false,
-        viewport: { width: 1280, height: 850 },
-        args: ['--disable-blink-features=AutomationControlled', ...(LOGIN_MODE ? [] : ['--window-position=-32000,-32000'])],
-      });
+      ctx = await launchBrowser(PROFILE_DIR, LOGIN_MODE);
     } catch (e) {
       const msg = String(e && e.message ? e.message : e);
-      if (/profile.*lock|SingletonLock/i.test(msg)) {
+      if (/profile.*lock|singletonlock|already running|processsingleton/i.test(msg)) {
         log('[BROWSER_ERROR] profile locked, possible zombie process');
-        process.exit(1);
+      } else {
+        log(`[BROWSER_ERROR] launch failed: ${msg.split('\n')[0]}`);
       }
-      throw e;
+      clearTimeout(killer);
+      try { fs.unlinkSync(LOCK_FILE); } catch (e2) {}
+      process.exit(1);
     }
 
     page = ctx.pages()[0] || (await ctx.newPage());
@@ -199,7 +314,7 @@ async function googleLogin(ctx, page) {
     await textarea.waitFor({ timeout: 15000 });
     const saved = (await textarea.inputValue()).trimEnd();
     if (saved !== updated) {
-      throw new Error(`save did not stick — server headline is "${saved.slice(0, 60)}", expected "${updated.slice(0, 60)}"`);
+      throw new AutomationError('VERIFY_ERROR', `save did not stick — server headline is "${saved.slice(0, 60)}", expected "${updated.slice(0, 60)}"`);
     }
 
     log(`OK: headline ${current.endsWith('.') ? 'dot removed' : 'dot added'} (verified) → "${updated.slice(0, 60)}"`);

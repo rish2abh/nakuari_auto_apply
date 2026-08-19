@@ -1,0 +1,26 @@
+[
+  {
+    "jobId": "job-node-001",
+    "title": "Senior Full Stack Engineer (Node.js / React / JavaScript)",
+    "company": "VoiceOwl AI",
+    "location": "Pune, India",
+    "description": "We are hiring a full stack engineer to build Node.js APIs, React dashboards, and AI-powered automation workflows using JavaScript, TypeScript, MongoDB, Kafka, and AWS.",
+    "question": "What is your notice period?"
+  },
+  {
+    "jobId": "job-qa-002",
+    "title": "QA Automation Engineer",
+    "company": "Testify Labs",
+    "location": "Remote",
+    "description": "Manual and automation testing for web apps. Need strong Selenium and JavaScript knowledge.",
+    "question": "What is your current CTC?"
+  },
+  {
+    "jobId": "job-lowmatch-003",
+    "title": "Customer Success Manager",
+    "company": "GrowthOps",
+    "location": "Bengaluru",
+    "description": "Own client onboarding and retention workflows across SaaS clients.",
+    "question": "How many years of experience do you have?"
+  }
+]

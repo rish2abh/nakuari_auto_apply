@@ -29,6 +29,25 @@ if (missing.length) {
   process.exit(1);
 }
 
+const clampDailyApplyCap = (value) => {
+  const n = Number(value ?? 15);
+  if (Number.isFinite(n) && n > 50) {
+    console.warn('[config] DAILY_APPLY_CAP exceeds 50; clamped to 50.');
+    return 50;
+  }
+  return Number.isFinite(n) && n > 0 ? n : 15;
+};
+
+const JOB_CONFIG = {
+  jobKeywords: (g('JOB_KEYWORDS') || '').split(',').map((s) => s.trim()).filter(Boolean),
+  jobLocation: g('JOB_LOCATION', ''),
+  minCtc: Number(g('MIN_CTC') || 0),
+  maxCtc: Number(g('MAX_CTC') || 0),
+  experienceRange: g('EXPERIENCE_RANGE', ''),
+  dailyApplyCap: clampDailyApplyCap(g('DAILY_APPLY_CAP', 15)),
+  minMatchScore: Math.max(0, Math.min(100, Number(g('MIN_MATCH_SCORE', 15) || 15))),
+};
+
 const CV = {
   name: g('NAME'),
   email: g('EMAIL'),
@@ -64,4 +83,4 @@ const CREDS = { email: g('GOOGLE_EMAIL') || g('EMAIL'), password: g('GOOGLE_PASS
 const geminiKey = g('GEMINI_KEY');
 const naukriProfileUrl = g('NAUKRI_PROFILE_URL', 'https://www.naukri.com/mnjuser/profile');
 
-module.exports = { CV, CREDS, geminiKey, naukriProfileUrl };
+module.exports = { CV, CREDS, geminiKey, naukriProfileUrl, JOB_CONFIG };

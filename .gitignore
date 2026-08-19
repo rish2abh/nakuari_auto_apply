@@ -6,6 +6,11 @@
 applications*.csv
 apply-state-*.json
 *.png
+answer-vault.json
+applied-jobs.json
+apply-count-*.json
+needs-review.log
+last-run-status.json
 
 # saved browser sessions (contain logged-in cookies)
 .*-chrome-profile/
